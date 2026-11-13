@@ -423,6 +423,14 @@ textarea.lined{background-image:repeating-linear-gradient(180deg,transparent 0 2
 @media (min-width:901px){.shop-scene{overflow:visible}.aisle{border-radius:16px 0 0 16px;position:sticky;top:80px;align-self:start;height:min(600px,calc(100vh - 180px));min-height:460px}}
 @media (max-width:560px){.step .st-l{display:none}.step.on{padding:4px}}
 .embedded [data-v="restart"],.public [data-v="restart"]{display:none}
+.geo-card{display:flex;gap:14px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--tag-edge);border-radius:12px;padding:16px;max-width:720px;margin-bottom:18px}
+.geo-card svg{flex:none;margin-top:2px}
+.geo-body{display:flex;flex-direction:column;gap:8px;min-width:0}
+.geo-body h3{font-size:16px}
+.geo-body p{margin:0;color:var(--muted);font-size:14px;max-width:62ch}
+.geo-body .geo-state{color:var(--ink);font-weight:600}
+.geo-body .geo-state.ok{color:var(--ok)}
+.geo-btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
 </style>
 
 <script src="config.js"></script>
@@ -775,7 +783,8 @@ function deviceInfo(){
   const type=/iPad|Tablet|Android(?!.*Mobile)/i.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1)?"tablet":/Mobi|iPhone|Android/i.test(ua)?"mobile":"desktop";
   const os=/Windows/.test(ua)?"Windows":/iPhone|iPad|iPod/.test(ua)?"iOS":/Android/.test(ua)?"Android":/Mac OS X|Macintosh/.test(ua)?"macOS":/Linux/.test(ua)?"Linux":"Other";
   const browser=/YaBrowser/.test(ua)?"Yandex":/Edg\//.test(ua)?"Edge":/OPR\//.test(ua)?"Opera":/Firefox\//.test(ua)?"Firefox":/Chrome\//.test(ua)?"Chrome":/Safari\//.test(ua)?"Safari":"Other";
-  return {type,os,browser,screen:(screen.width||0)+"x"+(screen.height||0),ua:ua.slice(0,250)};
+  let tz=null; try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||null; }catch(e){}
+  return {type,os,browser,screen:(screen.width||0)+"x"+(screen.height||0),ua:ua.slice(0,250),tz,utcOffsetMin:-new Date().getTimezoneOffset(),browserLang:(navigator.language||"").slice(0,20)};
 }
 function runRef(){ return S.db.doc(`sessions/${S.uid}/runs/${S.run.sid}`); }
 let saveTimer=null, saving=false, dirty=false;
@@ -1273,6 +1282,14 @@ var CSD_DATA = (function(){
     add("t_pokupateli","Время на экране «Покупатели», сек","numeric");
     add("t_zvezdy","Время на экране «Звёзды», сек","numeric");
     add("t_final","Время на экране «Финиш», сек","numeric");
+    add("chasovoy_poyas","Часовой пояс устройства","string");
+    add("utc_smeshchenie_min","Смещение времени устройства от UTC, мин","numeric");
+    add("yazyk_brauzera","Язык браузера","string");
+    add("geo_status","Геолокация: статус","numeric",{1:"разрешена",2:"запрещена в браузере",3:"не удалось определить",4:"отказ в игре"});
+    add("geo_lat","Геолокация: широта","numeric");
+    add("geo_lon","Геолокация: долгота","numeric");
+    add("geo_tochnost_m","Геолокация: точность, м","numeric");
+    add("geo_vremya","Геолокация: время определения (ISO 8601)","string");
     B.forEach(function(b){
       add("polka_b"+b.num, b.name+": полка","numeric",SHELF);
       add("pozitsiya_b"+b.num, b.name+": позиция на полке","numeric",POS);
@@ -1306,6 +1323,8 @@ var CSD_DATA = (function(){
     v.ustroystvo={desktop:1,tablet:2,mobile:3}[d.type]||null;
     v.yazyk=LANG_CODE[run.lang]||null;
     v.t_polki=st.shelves==null?null:st.shelves; v.t_reklama=st.ads==null?null:st.ads; v.t_pokupateli=st.shoppers==null?null:st.shoppers; v.t_zvezdy=st.stars==null?null:st.stars; v.t_final=st.finish==null?null:st.finish;
+    v.chasovoy_poyas=d.tz||null; v.utc_smeshchenie_min=(d.utcOffsetMin==null?null:d.utcOffsetMin); v.yazyk_brauzera=d.browserLang||null;
+    var g=run.geo||{}; v.geo_status=g.status||null; v.geo_lat=g.lat==null?null:g.lat; v.geo_lon=g.lon==null?null:g.lon; v.geo_tochnost_m=g.acc==null?null:g.acc; v.geo_vremya=g.time||null;
     B.forEach(function(b){ var x=(run.shelf||{})[b.id]||{}; v["polka_b"+b.num]=x.shelf||null; v["pozitsiya_b"+b.num]=x.shelf?(x.pos||null):null; v["prioritet_b"+b.num]=x.shelf?(x.prio||null):null; });
     B.forEach(function(b){ var a=(run.img||{})[b.id]||[]; I.forEach(function(s){ v["utv_b"+b.num+"_"+s.num]=a.indexOf(s.id)>=0?1:0; }); });
     C.forEach(function(c){ var a=(run.shop||{})[c.id]||{}; var bs=a.brands||[];
@@ -1402,8 +1421,10 @@ async function tryResume(){
 }
 async function finishRun(){
   const r=S.run; if(!r) return;
+  if(S.geoBusy){ toast(t("geoBusy")); render(); return; }
   r.screen_times.finish=(r.screen_times.finish||0)+Math.round((Date.now()-enteredAt)/1000);
   const end=new Date(); r.end=end.toISOString(); r.duration_sec=Math.round((end-new Date(r.start))/1000); r.status="complete"; r.screen=6; r.lang=S.lang;
+  if(!r.device||!("tz" in r.device)) r.device=Object.assign({},r.device||{},(({tz,utcOffsetMin,browserLang})=>({tz,utcOffsetMin,browserLang}))(deviceInfo()));
   clearTimeout(saveTimer); lsSet(storeKey(),r);
   const p=payload(); p.tables=CSD_DATA.tables(EMBED.cfg,r); p.duration_sec=r.duration_sec;
   post("complete",p);
@@ -1462,6 +1483,43 @@ function retryPending(){
 window.addEventListener("pagehide",()=>{
   if(!ENDPOINT||!S.run||S.run.status==="complete"||!navigator.sendBeacon) return;
   try{ const p=payload(); navigator.sendBeacon(ENDPOINT,new Blob([JSON.stringify({source:"csd-game",version:CSD_VERSION,type:"progress",respondent_id:p.respondent_id,session_id:p.session_id,status:p.status,screen:p.screen,variables:p.variables,state:p.state})],{type:"text/plain;charset=utf-8"})); }catch(e){}
+});
+
+
+/* ---- geolocation at the end of the game (optional, with consent) ---- */
+Object.assign(T.ru,{geoTitle:"Последний вопрос: где вы находитесь?",geoText:"Для исследования нам важно знать, в каком городе играли участники. Если вы согласны, браузер спросит разрешение на доступ к местоположению. Данные используются только в обобщённом виде. Можно отказаться — ответы всё равно сохранятся.",geoAllow:"Поделиться местоположением",geoSkip:"Не делиться",geoBusy:"Определяем местоположение…",geoOk:"Спасибо, местоположение получено. Теперь нажмите «Завершить».",geoNo:"Хорошо, местоположение не передаём. Нажмите «Завершить».",geoFail:"Не удалось получить местоположение — ответы всё равно сохранятся. Нажмите «Завершить»."});
+Object.assign(T.uz,{geoTitle:"Oxirgi savol: siz qayerdasiz?",geoText:"Tadqiqot uchun ishtirokchilar qaysi shaharda o'ynaganini bilish muhim. Rozi bo'lsangiz, brauzer joylashuvga ruxsat so'raydi. Ma'lumotlar faqat umumlashtirilgan holda ishlatiladi. Rad etishingiz mumkin — javoblaringiz baribir saqlanadi.",geoAllow:"Joylashuvni ulashish",geoSkip:"Ulashmaslik",geoBusy:"Joylashuv aniqlanmoqda…",geoOk:"Rahmat, joylashuv olindi. Endi «Yakunlash» tugmasini bosing.",geoNo:"Yaxshi, joylashuv yuborilmaydi. «Yakunlash» tugmasini bosing.",geoFail:"Joylashuvni aniqlab bo'lmadi — javoblar baribir saqlanadi. «Yakunlash» tugmasini bosing."});
+Object.assign(T.ky,{geoTitle:"Акыркы суроо: сиз кайдасыз?",geoText:"Изилдөө үчүн катышуучулар кайсы шаарда ойногонун билүү маанилүү. Макул болсоңуз, браузер жайгашкан жерге уруксат сурайт. Маалыматтар жалпыланган түрдө гана колдонулат. Баш тартсаңыз болот — жоопторуңуз баары бир сакталат.",geoAllow:"Жайгашкан жерди бөлүшүү",geoSkip:"Бөлүшпөө",geoBusy:"Жайгашкан жер аныкталууда…",geoOk:"Рахмат, жайгашкан жер алынды. Эми «Аяктоо» баскычын басыңыз.",geoNo:"Макул, жайгашкан жер жөнөтүлбөйт. «Аяктоо» баскычын басыңыз.",geoFail:"Жайгашкан жерди аныктоо мүмкүн болбоду — жооптор баары бир сакталат. «Аяктоо» баскычын басыңыз."});
+function geoCardHTML(){
+  const g=(S.run&&S.run.geo)||{}; let body;
+  if(S.geoBusy) body=`<p class="geo-state" role="status">${esc(t("geoBusy"))}</p>`;
+  else if(g.status===1) body=`<p class="geo-state ok" role="status">${esc(t("geoOk"))}</p>`;
+  else if(g.status===4) body=`<p class="geo-state" role="status">${esc(t("geoNo"))}</p><div class="geo-btns"><button class="btn small" data-act="geo-allow">${esc(t("geoAllow"))}</button></div>`;
+  else if(g.status===2||g.status===3) body=`<p class="geo-state" role="status">${esc(t("geoFail"))}</p>`;
+  else body=`<div class="geo-btns"><button class="btn primary" data-act="geo-allow">${esc(t("geoAllow"))}</button><button class="btn" data-act="geo-skip">${esc(t("geoSkip"))}</button></div>`;
+  return `<section class="geo-card"><svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7Z" fill="var(--rack)"/><circle cx="12" cy="9" r="2.6" fill="var(--tag)"/></svg>
+    <div class="geo-body"><h3>${esc(t("geoTitle"))}</h3><p>${esc(t("geoText"))}</p>${body}</div></section>`;
+}
+function renderFinish(){
+  return `<main class="wrap screen">
+    ${screenHead("fiEyebrow","fiTitle","fiHint")}
+    ${geoCardHTML()}
+    ${receiptHTML(false)}
+  </main>${navHTML({nextLabel:t("finish"),nextAct:"finish"})}`;
+}
+function setGeo(o){ if(!S.run) return; S.run.geo=Object.assign({time:new Date().toISOString()},o); S.geoBusy=false; S.run.updated=new Date().toISOString(); clearTimeout(saveTimer); flush(); render(); }
+function askGeo(){
+  if(!S.run||S.geoBusy) return;
+  if(!navigator.geolocation){ setGeo({status:3}); return; }
+  S.geoBusy=true; render();
+  navigator.geolocation.getCurrentPosition(
+    pos=>{ const c=pos.coords; setGeo({status:1,lat:Math.round(c.latitude*1e5)/1e5,lon:Math.round(c.longitude*1e5)/1e5,acc:Math.round(c.accuracy)}); },
+    err=>{ setGeo({status:err&&err.code===1?2:3}); },
+    {enableHighAccuracy:true,timeout:20000,maximumAge:60000});
+}
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-act=geo-allow],[data-act=geo-skip]"); if(!b) return;
+  if(b.dataset.act==="geo-allow") askGeo(); else setGeo({status:4});
 });
 
 /* ---- messages from the platform ---- */
